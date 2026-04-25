@@ -75,27 +75,38 @@ std::string PasswordGenerator::generateRandom(const PasswordConfig& config) {
         return "";
     }
     
+    int enabled_types = 0;
+    if (config.use_uppercase) enabled_types++;
+    if (config.use_lowercase) enabled_types++;
+    if (config.use_numbers) enabled_types++;
+    if (config.use_symbols) enabled_types++;
+    
+    if (enabled_types > config.length) {
+        std::string password;
+        password.reserve(config.length);
+        
+        for (int i = 0; i < config.length; ++i) {
+            password += getRandomChar(available);
+        }
+        
+        std::shuffle(password.begin(), password.end(), rng);
+        return password;
+    }
+    
     std::string password;
     password.reserve(config.length);
     
-    bool has_uppercase = false, has_lowercase = false;
-    bool has_numbers = false, has_symbols = false;
-    
     if (config.use_uppercase) {
         password += getRandomChar(getUppercaseChars());
-        has_uppercase = true;
     }
     if (config.use_lowercase) {
         password += getRandomChar(getLowercaseChars());
-        has_lowercase = true;
     }
     if (config.use_numbers) {
         password += getRandomChar(getNumberChars());
-        has_numbers = true;
     }
     if (config.use_symbols) {
         password += getRandomChar(getSymbolChars());
-        has_symbols = true;
     }
     
     while (password.length() < static_cast<size_t>(config.length)) {
