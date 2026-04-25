@@ -81,35 +81,31 @@ std::string PasswordGenerator::generateRandom(const PasswordConfig& config) {
     if (config.use_numbers) enabled_types++;
     if (config.use_symbols) enabled_types++;
     
-    if (enabled_types > config.length) {
-        std::string password;
-        password.reserve(config.length);
-        
-        for (int i = 0; i < config.length; ++i) {
-            password += getRandomChar(available);
-        }
-        
-        std::shuffle(password.begin(), password.end(), rng);
-        return password;
+    if (enabled_types == 0) {
+        return "";
     }
+    
+    int actual_length = config.length;
     
     std::string password;
-    password.reserve(config.length);
+    password.reserve(actual_length);
     
-    if (config.use_uppercase) {
-        password += getRandomChar(getUppercaseChars());
-    }
-    if (config.use_lowercase) {
-        password += getRandomChar(getLowercaseChars());
-    }
-    if (config.use_numbers) {
-        password += getRandomChar(getNumberChars());
-    }
-    if (config.use_symbols) {
-        password += getRandomChar(getSymbolChars());
+    std::vector<std::string> forced_chars;
+    if (config.use_uppercase) forced_chars.push_back(getUppercaseChars());
+    if (config.use_lowercase) forced_chars.push_back(getLowercaseChars());
+    if (config.use_numbers) forced_chars.push_back(getNumberChars());
+    if (config.use_symbols) forced_chars.push_back(getSymbolChars());
+    
+    if (static_cast<int>(forced_chars.size()) > actual_length) {
+        std::shuffle(forced_chars.begin(), forced_chars.end(), rng);
+        forced_chars.resize(actual_length);
     }
     
-    while (password.length() < static_cast<size_t>(config.length)) {
+    for (const auto& charset : forced_chars) {
+        password += getRandomChar(charset);
+    }
+    
+    while (password.length() < static_cast<size_t>(actual_length)) {
         password += getRandomChar(available);
     }
     
