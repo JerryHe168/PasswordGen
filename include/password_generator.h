@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <random>
+#include <mutex>
 
 enum class PasswordStrength {
     WEAK,
@@ -38,10 +39,14 @@ struct GeneratedPassword {
     int entropy;
 };
 
-void secureClear(std::string& str);
+void secureClear(std::string& str) noexcept;
 
 class PasswordGenerator {
 public:
+    static constexpr size_t MIN_WORD_LENGTH = 2;
+    static constexpr size_t MAX_WORD_LENGTH = 20;
+    static constexpr size_t MIN_WORDS_REQUIRED = 10;
+    
     PasswordGenerator();
     
     GeneratedPassword generate(const PasswordConfig& config, GenerationMode mode = GenerationMode::RANDOM);
@@ -53,10 +58,13 @@ public:
     std::string strengthToDescription(PasswordStrength strength);
     
     bool loadWordList(const std::string& filepath);
-    size_t getWordCount() const { return word_list.size(); }
-    void resetWordList() { word_list.clear(); initializeWordList(); }
+    size_t getWordCount() const;
+    void resetWordList();
+    
+    std::string getCurrentWordListPath() const;
 
 private:
+    mutable std::mutex mutex_;
     std::mt19937 rng;
     
     std::string generateRandom(const PasswordConfig& config);
@@ -74,8 +82,11 @@ private:
     void initializeWordList();
     void ensureWordListLoaded(const PasswordConfig& config);
     
+    static bool isValidWord(const std::string& word);
+    
     std::vector<std::string> word_list;
     std::string current_word_list_path;
+    bool using_default_list_ = true;
 };
 
 #endif // PASSWORD_GENERATOR_H

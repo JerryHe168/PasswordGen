@@ -106,29 +106,59 @@ PasswordGenerator::PasswordGenerator() {
     initializeWordList();
 }
 
-void secureClear(std::string& str) {
+namespace {
+
+void secureClearImpl(char* p, size_t len) noexcept {
+    if (!p || len == 0) {
+        return;
+    }
+    
+    for (size_t i = 0; i < len; ++i) {
+        *reinterpret_cast<volatile char*>(&p[i]) = '\0';
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    for (size_t i = 0; i < len; ++i) {
+        *reinterpret_cast<volatile char*>(&p[i]) = static_cast<char>(0x55);
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    for (size_t i = 0; i < len; ++i) {
+        *reinterpret_cast<volatile char*>(&p[i]) = static_cast<char>(0xAA);
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    
+    for (size_t i = 0; i < len; ++i) {
+        *reinterpret_cast<volatile char*>(&p[i]) = '\0';
+    }
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+}
+
+}
+
+void secureClear(std::string& str) noexcept {
     if (str.empty()) {
         return;
     }
     
-    volatile char* p = const_cast<volatile char*>(str.data());
     size_t len = str.size();
+    char* p = &str[0];
     
-    for (size_t i = 0; i < len; ++i) {
-        p[i] = '\0';
+    secureClearImpl(p, len);
+}
+
+bool PasswordGenerator::isValidWord(const std::string& word) {
+    if (word.length() < MIN_WORD_LENGTH || word.length() > MAX_WORD_LENGTH) {
+        return false;
     }
     
-    for (size_t i = 0; i < len; ++i) {
-        p[i] = static_cast<char>(0x55);
+    for (char c : word) {
+        if (!std::isalpha(static_cast<unsigned char>(c))) {
+            return false;
+        }
     }
     
-    for (size_t i = 0; i < len; ++i) {
-        p[i] = static_cast<char>(0xAA);
-    }
-    
-    for (size_t i = 0; i < len; ++i) {
-        p[i] = '\0';
-    }
+    return true;
 }
 
 void PasswordGenerator::initializeWordList() {
@@ -150,9 +180,12 @@ void PasswordGenerator::initializeWordList() {
         "heart", "soul", "mind", "body", "spirit", "dream", "hope", "wish",
         "power", "force", "energy", "magic", "mystic", "secret", "hidden", "open"
     };
+    using_default_list_ = true;
 }
 
 bool PasswordGenerator::loadWordList(const std::string& filepath) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
     std::ifstream file(filepath);
     if (!file.is_open()) {
         return false;
@@ -174,7 +207,7 @@ bool PasswordGenerator::loadWordList(const std::string& filepath) {
         
         if (start < end) {
             std::string word = line.substr(start, end - start);
-            if (!word.empty()) {
+            if (isValidWord(word)) {
                 new_words.push_back(word);
             }
         }
@@ -182,24 +215,78 @@ bool PasswordGenerator::loadWordList(const std::string& filepath) {
     
     file.close();
     
-    if (new_words.empty()) {
+    if (new_words.size() < MIN_WORDS_REQUIRED) {
         return false;
     }
     
-    word_list = new_words;
+    word_list.swap(new_words);
     current_word_list_path = filepath;
+    using_default_list_ = false;
     return true;
 }
 
+size_t PasswordGenerator::getWordCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return word_list.size();
+}
+
+void PasswordGenerator::resetWordList() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    word_list.clear();
+    initializeWordList();
+    current_word_list_path.clear();
+}
+
+std::string PasswordGenerator::getCurrentWordListPath() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return current_word_list_path;
+}
+
 void PasswordGenerator::ensureWordListLoaded(const PasswordConfig& config) {
-    if (!config.word_list_path.empty() && config.word_list_path != current_word_list_path) {
-        if (!loadWordList(config.word_list_path)) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    if (!config.word_list_path.empty()) {
+        if (config.word_list_path != current_word_list_path) {
+            std::vector<std::string> new_words;
+            std::string line;
+            
+            std::ifstream file(config.word_list_path);
+            if (file.is_open()) {
+                while (std::getline(file, line)) {
+                    size_t start = 0;
+                    size_t end = line.length();
+                    
+                    while (start < end && std::isspace(static_cast<unsigned char>(line[start]))) {
+                        start++;
+                    }
+                    while (end > start && std::isspace(static_cast<unsigned char>(line[end - 1]))) {
+                        end--;
+                    }
+                    
+                    if (start < end) {
+                        std::string word = line.substr(start, end - start);
+                        if (isValidWord(word)) {
+                            new_words.push_back(word);
+                        }
+                    }
+                }
+                file.close();
+                
+                if (new_words.size() >= MIN_WORDS_REQUIRED) {
+                    word_list.swap(new_words);
+                    current_word_list_path = config.word_list_path;
+                    using_default_list_ = false;
+                    return;
+                }
+            }
+            
             if (word_list.empty()) {
                 initializeWordList();
             }
         }
-    } else if (config.word_list_path.empty() && !current_word_list_path.empty()) {
-        resetWordList();
+    } else if (!current_word_list_path.empty()) {
+        word_list.clear();
+        initializeWordList();
         current_word_list_path.clear();
     }
     
