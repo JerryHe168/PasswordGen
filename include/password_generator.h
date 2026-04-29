@@ -28,6 +28,7 @@ struct PasswordConfig {
     int memorable_words = 2;
     int memorable_numbers = 2;
     int memorable_symbols = 1;
+    std::string word_list_path;
 };
 
 struct GeneratedPassword {
@@ -36,6 +37,8 @@ struct GeneratedPassword {
     std::string strength_description;
     int entropy;
 };
+
+void secureClear(std::string& str);
 
 class PasswordGenerator {
 public:
@@ -48,6 +51,10 @@ public:
     int calculateEntropy(const std::string& password);
     std::string strengthToString(PasswordStrength strength);
     std::string strengthToDescription(PasswordStrength strength);
+    
+    bool loadWordList(const std::string& filepath);
+    size_t getWordCount() const { return word_list.size(); }
+    void resetWordList() { word_list.clear(); initializeWordList(); }
 
 private:
     std::mt19937 rng;
@@ -65,8 +72,10 @@ private:
     char getRandomChar(const std::string& charset);
     std::string getRandomWord();
     void initializeWordList();
+    void ensureWordListLoaded(const PasswordConfig& config);
     
     std::vector<std::string> word_list;
+    std::string current_word_list_path;
 };
 
 #endif // PASSWORD_GENERATOR_H

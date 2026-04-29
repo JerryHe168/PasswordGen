@@ -4,11 +4,131 @@
 #include <cmath>
 #include <chrono>
 #include <unordered_set>
+#include <random>
+#include <thread>
+#include <atomic>
+#include <fstream>
+#include <sstream>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <ntsecapi.h>
+#pragma comment(lib, "advapi32.lib")
+#endif
+
+namespace {
+
+uint64_t getThreadIdEntropy() {
+    std::hash<std::thread::id> hasher;
+    return static_cast<uint64_t>(hasher(std::this_thread::get_id()));
+}
+
+uint64_t getTimeEntropy() {
+    auto now = std::chrono::high_resolution_clock::now();
+    auto duration = now.time_since_epoch();
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count()
+    );
+}
+
+uint64_t getStackAddressEntropy() {
+    int x;
+    return reinterpret_cast<uint64_t>(&x);
+}
+
+uint64_t getRandomDeviceEntropy() {
+    try {
+        std::random_device rd;
+        return (static_cast<uint64_t>(rd()) << 32) | static_cast<uint32_t>(rd());
+    } catch (...) {
+        return 0;
+    }
+}
+
+#ifdef _WIN32
+bool useWindowsCryptoAPI(std::vector<uint32_t>& seed_data) {
+    HCRYPTPROV hProvider;
+    if (CryptAcquireContextW(&hProvider, NULL, NULL, PROV_RSA_FULL, 
+                              CRYPT_VERIFYCONTEXT | CRYPT_SILENT)) {
+        std::vector<BYTE> buffer(32);
+        if (CryptGenRandom(hProvider, static_cast<DWORD>(buffer.size()), buffer.data())) {
+            for (size_t i = 0; i < buffer.size(); i += 4) {
+                uint32_t val = 0;
+                val |= static_cast<uint32_t>(buffer[i]) << 0;
+                val |= static_cast<uint32_t>(buffer[i + 1]) << 8;
+                val |= static_cast<uint32_t>(buffer[i + 2]) << 16;
+                val |= static_cast<uint32_t>(buffer[i + 3]) << 24;
+                seed_data.push_back(val);
+            }
+        }
+        CryptReleaseContext(hProvider, 0);
+        return true;
+    }
+    return false;
+}
+#endif
+
+}
 
 PasswordGenerator::PasswordGenerator() {
-    auto seed = std::chrono::high_resolution_clock::now().time_since_epoch().count();
-    rng.seed(static_cast<unsigned int>(seed));
+    std::vector<uint32_t> seed_data;
+    
+    uint64_t time_entropy = getTimeEntropy();
+    seed_data.push_back(static_cast<uint32_t>(time_entropy >> 32));
+    seed_data.push_back(static_cast<uint32_t>(time_entropy & 0xFFFFFFFF));
+    
+    uint64_t thread_entropy = getThreadIdEntropy();
+    seed_data.push_back(static_cast<uint32_t>(thread_entropy >> 32));
+    seed_data.push_back(static_cast<uint32_t>(thread_entropy & 0xFFFFFFFF));
+    
+    uint64_t stack_entropy = getStackAddressEntropy();
+    seed_data.push_back(static_cast<uint32_t>(stack_entropy >> 32));
+    seed_data.push_back(static_cast<uint32_t>(stack_entropy & 0xFFFFFFFF));
+    
+    uint64_t rd_entropy = getRandomDeviceEntropy();
+    if (rd_entropy != 0) {
+        seed_data.push_back(static_cast<uint32_t>(rd_entropy >> 32));
+        seed_data.push_back(static_cast<uint32_t>(rd_entropy & 0xFFFFFFFF));
+    }
+    
+#ifdef _WIN32
+    useWindowsCryptoAPI(seed_data);
+#endif
+    
+    static std::atomic<uint64_t> counter{0};
+    uint64_t static_entropy = counter.fetch_add(1, std::memory_order_relaxed);
+    seed_data.push_back(static_cast<uint32_t>(static_entropy >> 32));
+    seed_data.push_back(static_cast<uint32_t>(static_entropy & 0xFFFFFFFF));
+    
+    std::seed_seq seed_seq(seed_data.begin(), seed_data.end());
+    rng.seed(seed_seq);
+    
     initializeWordList();
+}
+
+void secureClear(std::string& str) {
+    if (str.empty()) {
+        return;
+    }
+    
+    volatile char* p = const_cast<volatile char*>(str.data());
+    size_t len = str.size();
+    
+    for (size_t i = 0; i < len; ++i) {
+        p[i] = '\0';
+    }
+    
+    for (size_t i = 0; i < len; ++i) {
+        p[i] = static_cast<char>(0x55);
+    }
+    
+    for (size_t i = 0; i < len; ++i) {
+        p[i] = static_cast<char>(0xAA);
+    }
+    
+    for (size_t i = 0; i < len; ++i) {
+        p[i] = '\0';
+    }
 }
 
 void PasswordGenerator::initializeWordList() {
@@ -32,8 +152,68 @@ void PasswordGenerator::initializeWordList() {
     };
 }
 
+bool PasswordGenerator::loadWordList(const std::string& filepath) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        return false;
+    }
+    
+    std::vector<std::string> new_words;
+    std::string line;
+    
+    while (std::getline(file, line)) {
+        size_t start = 0;
+        size_t end = line.length();
+        
+        while (start < end && std::isspace(static_cast<unsigned char>(line[start]))) {
+            start++;
+        }
+        while (end > start && std::isspace(static_cast<unsigned char>(line[end - 1]))) {
+            end--;
+        }
+        
+        if (start < end) {
+            std::string word = line.substr(start, end - start);
+            if (!word.empty()) {
+                new_words.push_back(word);
+            }
+        }
+    }
+    
+    file.close();
+    
+    if (new_words.empty()) {
+        return false;
+    }
+    
+    word_list = new_words;
+    current_word_list_path = filepath;
+    return true;
+}
+
+void PasswordGenerator::ensureWordListLoaded(const PasswordConfig& config) {
+    if (!config.word_list_path.empty() && config.word_list_path != current_word_list_path) {
+        if (!loadWordList(config.word_list_path)) {
+            if (word_list.empty()) {
+                initializeWordList();
+            }
+        }
+    } else if (config.word_list_path.empty() && !current_word_list_path.empty()) {
+        resetWordList();
+        current_word_list_path.clear();
+    }
+    
+    if (word_list.empty()) {
+        initializeWordList();
+    }
+}
+
 GeneratedPassword PasswordGenerator::generate(const PasswordConfig& config, GenerationMode mode) {
     GeneratedPassword result;
+    
+    if (mode == GenerationMode::MEMORABLE) {
+        ensureWordListLoaded(config);
+    }
     
     switch (mode) {
         case GenerationMode::RANDOM:
