@@ -35,6 +35,33 @@ install(TARGETS passwordgen
     RUNTIME DESTINATION bin
 )
 
+option(BUILD_TESTS "Build unit tests" ON)
+
+if(BUILD_TESTS)
+    enable_testing()
+    
+    set(TEST_SOURCES
+        tests/test_passwordgen.cpp
+        src/password_generator.cpp
+        src/password_exporter.cpp
+    )
+    
+    add_executable(test_passwordgen ${TEST_SOURCES})
+    
+    target_include_directories(test_passwordgen PRIVATE include)
+    
+    if(WIN32)
+        target_compile_definitions(test_passwordgen PRIVATE -D_WIN32_WINNT=0x0601)
+    endif()
+    
+    add_test(NAME PasswordGenTests COMMAND test_passwordgen)
+    
+    message(STATUS "")
+    message(STATUS "  测试:")
+    message(STATUS "    构建测试:  是 (使用 -DBUILD_TESTS=OFF 禁用)")
+    message(STATUS "    测试目标:  test_passwordgen")
+endif()
+
 message(STATUS "")
 message(STATUS "========================================")
 message(STATUS "  PasswordGen v${PROJECT_VERSION}")
